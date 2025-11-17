@@ -84,7 +84,7 @@ def reporting(per_station, outputdir, use_ridge=False):
 	plotoutput.mkdir(parents=True, exist_ok=True) #make plot output dir if it doesnt exist
 
 	# get reporting mode and models from arguments set on run
-	mode = getattr(reporting, "mode", "within") #default to within if not set
+	# (we preserve the attribute approach but this function now performs validation-only)
 	models_to_run = getattr(reporting, "models", ("OLS", "Ridge")) #model types to run
 	model_map = {"OLS": LinearRegression, "Ridge": Ridge} #map models to classes
 
@@ -93,145 +93,106 @@ def reporting(per_station, outputdir, use_ridge=False):
 		pre = df[df.index < datesplit] #split into pre and post 2000 dataframes
 		post = df[df.index >= datesplit] #post 2000 dataframe
 
-		#validation mode is basically training on pre2000 data to test on post 2000 data
-		if mode == "validate": #if set to validate
-			train_df, test_df = pre, post #train on pre2000, test on post2000
-			train_name, test_name = "pre2000", "post2000" #sets names
+		# validation: train on pre2000, test on post2000
+		train_df, test_df = pre, post #train on pre2000, test on post2000
+		train_name, test_name = "pre2000", "post2000" #sets names
 
-			X_train = train_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #x value training set
-			y_train = train_df["target"].values #target y training values
-			X_test = test_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #x value test set
-			y_test = test_df["target"].values #target y test values
+		X_train = train_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #x value training set
+		y_train = train_df["target"].values #target y training values
+		X_test = test_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #x value test set
+		y_test = test_df["target"].values #target y test values
 
-			for model_name in models_to_run: #for each model to run
-				ModelCls = model_map.get(model_name) #set model class
-				model = ModelCls() #state model
-				model.fit(X_train, y_train) #fit model to training data
-				ypred_train = model.predict(X_train) #predict on training data
-				ypred_test = model.predict(X_test) #predict on test data
-				r2_train = float(r2_score(y_train, ypred_train)) if len(y_train) > 0 else float("nan") #r2 score for training data
-				r2_test = float(r2_score(y_test, ypred_test)) if len(y_test) > 0 else float("nan") #r2 score for test data
-				coefs = list(model.coef_) #list our coefficients
-				intercept = float(model.intercept_) #get the intercept
+		for model_name in models_to_run: #for each model to run
+			ModelCls = model_map.get(model_name) #set model class
+			if ModelCls is None:
+				continue
+			model = ModelCls() #state model
+			model.fit(X_train, y_train) #fit model to training data
+			ypred_train = model.predict(X_train) #predict on training data
+			ypred_test = model.predict(X_test) #predict on test data
+			r2_train = float(r2_score(y_train, ypred_train)) if len(y_train) > 0 else float("nan") #r2 score for training data
+			r2_test = float(r2_score(y_test, ypred_test)) if len(y_test) > 0 else float("nan") #r2 score for test data
+			coefs = list(model.coef_) #list our coefficients
+			intercept = float(model.intercept_) #get the intercept
 
-				results.append({ #append our results
-					"station": name, #respective station name
-					"period": f"train_{train_name}_test_{test_name}", #period info (pre or post 2000, train or test data)
-					"model": model_name, #used model name
-					"n_rows_train": train_df.shape[0], #number of rows in training data
-					"n_rows_test": test_df.shape[0], #number of rows in test data
-					"intercept": intercept, #the intercept value
-					"coef_MEI": coefs[0] if len(coefs) > 0 else float("nan"), #coefficient for MEI
-					"coef_AAOI": coefs[1] if len(coefs) > 1 else float("nan"), #coefficient for AAOI
-					"coef_reg_t2m": coefs[2] if len(coefs) > 2 else float("nan"), #coefficient for regional t2m mean
-					"coef_reg_wind": coefs[3] if len(coefs) > 3 else float("nan"), #coefficient for regional wind mean
-					"R2_train": r2_train, #R2 score for training data
-					"R2_test": r2_test, #R2 score for test data
-				})
+			#Statistical test/diagnostics stuff to see how the models did
+			rmse = float("nan") #root mean squared error, this is a regression error metric to see how well the model did
+			mae = float("nan") #mean absolute error, another regression error metric
+			base_rmse = float("nan") #given a baseline rmse value to create skill score 
+			skillsc = float("nan") #skill score to see how well the model did against climatology defaults
+			if len(y_test) > 0: #loop for if there are test variables present
+				diffs = y_test - ypred_test #differences between observed and predicted
+				rmse = float(np.sqrt(np.mean(diffs ** 2))) #calculate rmse this is the square root of the mean of the squared differences
+				mae = float(np.mean(np.abs(diffs))) #calculate mae, this is the mean of the absolute differences
+				trainmean = float(np.mean(y_train)) if len(y_train) > 0 else float("nan") #mean of training y values
+				baselines = np.full_like(y_test, trainmean, dtype=float) #baseline predictions as the train mean
+				base_rmse = float(np.sqrt(np.mean((y_test - baselines) ** 2))) #baseline rmse calculation
+				if base_rmse and not np.isnan(base_rmse): #if baseline rmse is valid
+					skillsc = 1.0 - (rmse / base_rmse) #set skill score to 1- the rmse output over the baseline rmse
 
-				rpt = outputdir / f"report_{name}_train_{train_name}_test_{test_name}_{model_name}.txt" #set a file path for the end report
-				with rpt.open("w", encoding="utf-8") as f: #open the report file
-					f.write(f"Station: {name}\nMode: validate\nTrain: {train_name}\nTest: {test_name}\nModel: {model_name}\nRows (train/test): {train_df.shape[0]} / {test_df.shape[0]}\n\n") #write's all the aformentioned info into the csv to be read as a report file
-					f.write(f"Intercept: {intercept}\n")
-					f.write(f"coef_MEI: {coefs[0] if len(coefs) > 0 else 'nan'}\n")
-					f.write(f"coef_AAOI: {coefs[1] if len(coefs) > 1 else 'nan'}\n")
-					f.write(f"coef_reg_t2m: {coefs[2] if len(coefs) > 2 else 'nan'}\n")
-					f.write(f"coef_reg_wind: {coefs[3] if len(coefs) > 3 else 'nan'}\n")
-					f.write(f"R2_train: {r2_train}\nR2_test: {r2_test}\n")
+			results.append({ #append our results
+				"station": name, #respective station name
+				"period": f"train_{train_name}_test_{test_name}", #period info (pre or post 2000, train or test data)
+				"model": model_name, #used model name
+				"n_rows_train": train_df.shape[0], #number of rows in training data
+				"n_rows_test": test_df.shape[0], #number of rows in test data
+				"intercept": intercept, #the intercept value
+				"coef_MEI": coefs[0] if len(coefs) > 0 else float("nan"), #coefficient for MEI
+				"coef_AAOI": coefs[1] if len(coefs) > 1 else float("nan"), #coefficient for AAOI
+				"coef_reg_t2m": coefs[2] if len(coefs) > 2 else float("nan"), #coefficient for regional t2m mean
+				"coef_reg_wind": coefs[3] if len(coefs) > 3 else float("nan"), #coefficient for regional wind mean
+				"R2_train": r2_train, #R2 score for training data
+				"R2_test": r2_test, #R2 score for test data
+				"RMSE_test": rmse, #root mean squared error on test set
+				"MAE_test": mae, #mean absolute error on test set
+				"baseline_rmse": base_rmse, #RMSE of climatology baseline (train mean)
+				"skill_score": skillsc, #1 - RMSE_model / RMSE_climatology
+			})
 
-				# scatter for test set (observed vs predicted)
-				fig, ax = plt.subplots(figsize=(6, 6)) #sets figure and axis and size (6x6)
-				if len(y_test) > 0: #if there are test y values
-					ax.scatter(y_test, ypred_test, s=20, alpha=0.7) #scatter plot of observed vs predicted, size of plots and alpha is transperency
-					mn = min(y_test.min(), ypred_test.min()) #min value for 1:1 line
-					mx = max(y_test.max(), ypred_test.max()) #max val
-					ax.plot([mn, mx], [mn, mx], color="k", linestyle="--", label="1:1") #makes a 1:1 line (basically a perfect prediction line)
-				ax.set_xlabel("Observed 2m Surface Temperature, C") #x axis label
-				ax.set_ylabel("Predicted 2m Surface Temperature, C") #y axis label
-				ax.set_title(f"{name} validate {model_name} Test Observed vs Predicted") #title
-				ax.legend() #legend, we should probs add more to this
-				fig.tight_layout() #tight layout so things dont overlap
-				scatter_path = plotoutput / f"{name}_validate_{model_name}_obs_vs_pred.png" #path to save to and filename to save to
-				fig.savefig(scatter_path) #saves it
-				plt.close(fig) #closes the file
+			# write per-station report
+			rpt = outputdir / f"report_{name}_train_{train_name}_test_{test_name}_{model_name}.txt" #set a file path for the end report
+			with rpt.open("w", encoding="utf-8") as f: #open the report file
+				f.write(f"Station: {name}\nMode: validate (train pre2000 -> test post2000)\nModel: {model_name}\nRows (train/test): {train_df.shape[0]} / {test_df.shape[0]}\n\n") #write's all the aformentioned info into the csv to be read as a report file
+				f.write(f"Intercept: {intercept}\n")
+				f.write(f"coef_MEI: {coefs[0] if len(coefs) > 0 else 'nan'}\n")
+				f.write(f"coef_AAOI: {coefs[1] if len(coefs) > 1 else 'nan'}\n")
+				f.write(f"coef_reg_t2m: {coefs[2] if len(coefs) > 2 else 'nan'}\n")
+				f.write(f"coef_reg_wind: {coefs[3] if len(coefs) > 3 else 'nan'}\n")
+				f.write(f"R2_train: {r2_train}\nR2_test: {r2_test}\n")
+				f.write(f"RMSE_test: {rmse}\nMAE_test: {mae}\n")
+				f.write(f"baseline_rmse (climatology): {base_rmse}\n")
+				f.write(f"skill_score (1 - RMSE_model/RMSE_climatology): {skillsc}\n")
 
-				#time series graph
-				fig, ax = plt.subplots(figsize=(10, 4)) #figure and axis with size 10x4
-				if len(test_df) > 0: #if there is test data 
-					ax.plot(test_df.index, y_test, label="observed") #plot observed values with
-					ax.plot(test_df.index, ypred_test, label="predicted") #predicted values 
-				ax.set_ylabel("2m Surface Temperature, C") #y axis label
-				ax.set_title(f"{name} validate {model_name} Test Time Series") #title
-				ax.legend() #legend, same as before im sure we could add more than just the 1:1 line
-				fig.tight_layout() #tight layout so things dont overlap
-				ts_path = plotoutput / f"{name}_validate_{model_name}_timeseries.png" #path to save to and filename to save to
-				fig.savefig(ts_path) #saves it
-				plt.close(fig) #closes the file
+			# plots
+			fig, ax = plt.subplots(figsize=(6, 6)) #sets figure and axis and size (6x6)
+			if len(y_test) > 0: #if there are test y values
+				ax.scatter(y_test, ypred_test, s=20, alpha=0.7) #scatter plot of observed vs predicted
+				mn = min(y_test.min(), ypred_test.min()) #min value for 1:1 line
+				mx = max(y_test.max(), ypred_test.max()) #max val
+				ax.plot([mn, mx], [mn, mx], color="k", linestyle="--", label="1:1") #1:1 line
+			ax.set_xlabel("Observed 2m Surface Temperature, C") #x axis label
+			ax.set_ylabel("Predicted 2m Surface Temperature, C") #y axis label
+			ax.set_title(f"{name} validate {model_name} Test Observed vs Predicted") #title
+			ax.legend()
+			fig.tight_layout()
+			scatter_path = plotoutput / f"{name}_validate_{model_name}_obs_vs_pred.png" #path to save scatter
+			fig.savefig(scatter_path)
+			plt.close(fig)
 
-		else:
-			#non-validated plotting area
-			for period_name, period_df in (("pre2000", pre), ("post2000", post)): #for each period (pre and post 2000) we loop this
-				X = period_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #x values for the period
-				y = period_df["target"].values #target y values for the period
+			#time series graph
+			fig, ax = plt.subplots(figsize=(10, 4)) #figure and axis with size 10x4
+			if len(test_df) > 0: #if there is test data
+				ax.plot(test_df.index, y_test, label="observed") #plot observed values
+				ax.plot(test_df.index, ypred_test, label="predicted") #predicted values
+			ax.set_ylabel("2m Surface Temperature, C") #y axis label
+			ax.set_title(f"{name} validate {model_name} Test Time Series") #title
+			ax.legend()
+			fig.tight_layout()
+			ts_path = plotoutput / f"{name}_validate_{model_name}_timeseries.png" #path to save timeseries
+			fig.savefig(ts_path)
+			plt.close(fig)
 
-				for model_name in models_to_run: #for each model to run
-					ModelCls = model_map.get(model_name) #gets the model class
-					model = ModelCls() #class initialisation
-					model.fit(X, y) #fit the model to the data
-					ypred = model.predict(X) #predict y values
-					r2 = float(r2_score(y, ypred)) if len(y) > 0 else float("nan") #r2 score calculation
-					coefs = list(model.coef_) #list of coefficients
-					intercept = float(model.intercept_) #intercept value
-					results.append({ #same as before, appending results to the list
-						"station": name,
-						"period": period_name,
-						"model": model_name,
-						"n_rows": period_df.shape[0],
-						"intercept": intercept,
-						"coef_MEI": coefs[0] if len(coefs) > 0 else float("nan"),
-						"coef_AAOI": coefs[1] if len(coefs) > 1 else float("nan"),
-						"coef_reg_t2m": coefs[2] if len(coefs) > 2 else float("nan"),
-						"coef_reg_wind": coefs[3] if len(coefs) > 3 else float("nan"),
-						"R2": r2,
-					})
-
-					rpt = outputdir / f"report_{name}_{period_name}_{model_name}.txt" #again same as before makes a report file, but for non-validated data
-					with rpt.open("w", encoding="utf-8") as f:
-						f.write(f"Station: {name}\nPeriod: {period_name}\nModel: {model_name}\nRows: {period_df.shape[0]}\n\n")
-						f.write(f"Intercept: {intercept}\n")
-						f.write(f"coef_MEI: {coefs[0] if len(coefs) > 0 else 'nan'}\n")
-						f.write(f"coef_AAOI: {coefs[1] if len(coefs) > 1 else 'nan'}\n")
-						f.write(f"coef_reg_t2m: {coefs[2] if len(coefs) > 2 else 'nan'}\n")
-						f.write(f"coef_reg_wind: {coefs[3] if len(coefs) > 3 else 'nan'}\n")
-						f.write(f"R2: {r2}\n")
-
-					#further plotting area for non-validated data
-					fig, ax = plt.subplots(figsize=(6, 6)) #these plots are the same as above but they just use the non-validated data
-					ax.scatter(y, ypred, s=20, alpha=0.7)
-					if len(y) > 0:
-						mn = min(y.min(), ypred.min())
-						mx = max(y.max(), ypred.max())
-						ax.plot([mn, mx], [mn, mx], color="k", linestyle="--", label="1:1")
-					ax.set_xlabel("Observed 2m Surface Temperature, C")
-					ax.set_ylabel("Predicted 2m Surface Temperature, C")
-					ax.set_title(f"{name} {period_name} {model_name} Observed vs Predicted")
-					ax.legend()
-					fig.tight_layout()
-					scatter_path = plotoutput / f"{name}_{period_name}_{model_name}_obs_vs_pred.png"
-					fig.savefig(scatter_path)
-					plt.close(fig)
-
-					fig, ax = plt.subplots(figsize=(10, 4))
-					ax.plot(period_df.index, y, label="observed")
-					ax.plot(period_df.index, ypred, label="predicted")
-					ax.set_ylabel("2m Surface Temperature, C")
-					ax.set_title(f"{name} {period_name} {model_name} Time Series")
-					ax.legend()
-					fig.tight_layout()
-					ts_path = plotoutput / f"{name}_{period_name}_{model_name}_timeseries.png"
-					fig.savefig(ts_path)
-					plt.close(fig)
-
+	# write summary
 	outputdf = pd.DataFrame(results) #final dataframe from results list
 	outputdf.to_csv(outputdir / "regression_summary.csv", index=False) #writes the dataframe to a csv file
 	print("Wrote regression summary to", outputdir / "regression_summary.csv") #prints out where the csv was written
