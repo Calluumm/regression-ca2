@@ -1,3 +1,9 @@
+
+#
+#Arguments at the bottom, 
+#Parts are a bit bloated for clarity I feel it could be made much more efficient but this works fine having all our plots come out right now
+#
+
 #import modules you'll have to pip install missing ones
 from pathlib import Path #Path module for filepath handling
 import argparse #command line argument parsing
@@ -6,6 +12,8 @@ import numpy as np #maths lib
 from sklearn.linear_model import LinearRegression, Ridge #regression model lib, grabbing specifically the 2 models we want to use
 from sklearn.metrics import r2_score #r2 is a regression "score" metric
 import matplotlib.pyplot as plt #plotter lib
+from sklearn.pipeline import make_pipeline #so we can scale into regression
+from sklearn.preprocessing import StandardScaler #scaling for ridge regression
 
 #Set respective files to their apt names here, top 2 are the system indices, the bottom 3 are the 3 weather stations used
 AAOI_FNAME = "aaoi.csv"
@@ -13,6 +21,14 @@ MEI_FNAME = "mei.csv"
 ANTO_FNAME = "AntoWS.csv"
 PUERTO_FNAME = "PuertoWS.csv"
 QUIN_FNAME = "QuinWS.csv"
+
+#For the graphs so the actual names of the places are used
+STATION_ACTUALS = {
+	"AntoWS": "Antofagasta",
+	"PuertoWS": "Puerto Montt el Tepual",
+	"QuinWS": "Quintero",
+}
+
 
 ###
 #Data processing area to read and load our data into appropriate frames or series
@@ -102,18 +118,30 @@ def reporting(per_station, outputdir, use_ridge=False):
 		X_test = test_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #x value test set
 		y_test = test_df["target"].values #target y test values
 
+		# collect model predictions so we can optionally produce a 2x2 panel combining OLS and Ridge
+		model_preds = {}
+
 		for model_name in models_to_run: #for each model to run
 			ModelCls = model_map.get(model_name) #set model class
 			if ModelCls is None:
 				continue
-			model = ModelCls() #state model
+			if model_name == "Ridge": #if ridge is selected then standardise the data first
+				model = make_pipeline(StandardScaler(), Ridge()) #using a pipeline from sklearn we can do this, standardising is to mitigate sensitivity to variable scaling
+			else: 
+				model = ModelCls()
+
 			model.fit(X_train, y_train) #fit model to training data
 			ypred_train = model.predict(X_train) #predict on training data
 			ypred_test = model.predict(X_test) #predict on test data
 			r2_train = float(r2_score(y_train, ypred_train)) if len(y_train) > 0 else float("nan") #r2 score for training data
 			r2_test = float(r2_score(y_test, ypred_test)) if len(y_test) > 0 else float("nan") #r2 score for test data
-			coefs = list(model.coef_) #list our coefficients
-			intercept = float(model.intercept_) #get the intercept
+			model_preds[model_name] = {"ypred_test": ypred_test, "r2_test": r2_test}
+			final_est = model #default final estimator is the model itself
+			if hasattr(model, "named_steps"): #check for named_steps (its a pipeline attribute)
+				if "ridge" in model.named_steps: #check for ridge step
+					final_est = model.named_steps["ridge"] #set final estimator to ridge step
+			coefs = list(final_est.coef_) if hasattr(final_est, "coef_") else [float("nan")] * 4 #get all our coefficients
+			intercept = float(final_est.intercept_) if hasattr(final_est, "intercept_") else float("nan") #get the intercept
 
 			#Statistical test/diagnostics stuff to see how the models did
 			rmse = float("nan") #root mean squared error, this is a regression error metric to see how well the model did
@@ -129,6 +157,8 @@ def reporting(per_station, outputdir, use_ridge=False):
 				base_rmse = float(np.sqrt(np.mean((y_test - baselines) ** 2))) #baseline rmse calculation
 				if base_rmse and not np.isnan(base_rmse): #if baseline rmse is valid
 					skillsc = 1.0 - (rmse / base_rmse) #set skill score to 1- the rmse output over the baseline rmse
+			if model_name in model_preds: #to store the rmse to be used on our graphs
+				model_preds[model_name]["rmse_test"] = rmse #puts the rmse output in a dict for use later
 
 			results.append({ #append our results
 				"station": name, #respective station name
@@ -173,6 +203,11 @@ def reporting(per_station, outputdir, use_ridge=False):
 			ax.set_xlabel("Observed 2m Surface Temperature, C") #x axis label
 			ax.set_ylabel("Predicted 2m Surface Temperature, C") #y axis label
 			ax.set_title(f"{name} validate {model_name} Test Observed vs Predicted") #title
+			# annotate R2 values on the scatter plot
+			r2_train_txt = f"R2_train: {r2_train:.3f}" if not np.isnan(r2_train) else "R2_train: nan"
+			r2_test_txt = f"R2_test: {r2_test:.3f}" if not np.isnan(r2_test) else "R2_test: nan"
+			ax.text(0.02, 0.98, r2_train_txt + "\n" + r2_test_txt, transform=ax.transAxes,
+				fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
 			ax.legend()
 			fig.tight_layout()
 			scatter_path = plotoutput / f"{name}_validate_{model_name}_obs_vs_pred.png" #path to save scatter
@@ -186,17 +221,167 @@ def reporting(per_station, outputdir, use_ridge=False):
 				ax.plot(test_df.index, ypred_test, label="predicted") #predicted values
 			ax.set_ylabel("2m Surface Temperature, C") #y axis label
 			ax.set_title(f"{name} validate {model_name} Test Time Series") #title
+			# annotate R2 for timeseries plots (test R2 is most relevant for plotted test series)
+			ax.text(0.02, 0.98, r2_test_txt, transform=ax.transAxes, fontsize=9, va="top",
+				bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
 			ax.legend()
 			fig.tight_layout()
 			ts_path = plotoutput / f"{name}_validate_{model_name}_timeseries.png" #path to save timeseries
 			fig.savefig(ts_path)
 			plt.close(fig)
 
-	# write summary
+		#When both models are used we can do an output that side by sides them
+		if set(model_preds.keys()) >= {"OLS", "Ridge"}: #So a generic if statement for when they're both selected
+			ypred_ols = model_preds["OLS"]["ypred_test"] #predicted values for OLS
+			ypred_ridge = model_preds["Ridge"]["ypred_test"] #predicted valyues for ridge
+			r2_ols = model_preds["OLS"].get("r2_test", float("nan")) #gets the r2 value for ols
+			r2_ridge = model_preds["Ridge"].get("r2_test", float("nan")) #gets the r2 value for ridge
+			rmse_ols = model_preds["OLS"].get("rmse_test", float("nan")) #gets the rmse value for ols
+			rmse_ridge = model_preds["Ridge"].get("rmse_test", float("nan")) #get the rmse value for ridge
+
+			mn = min(y_test.min(), ypred_ols.min(), ypred_ridge.min()) #min and max values for the axis limits
+			mx = max(y_test.max(), ypred_ols.max(), ypred_ridge.max())
+
+			display_name = STATION_ACTUALS.get(name, name.replace('WS', '').replace('_', ' ')) #Sets the name to the mapped one in the top dict
+			fig, axes = plt.subplots(1, 2, figsize=(12, 5)) #sets up a subplot in a 1x2 format (and gives our figure size)
+			ax0, ax1 = axes[0], axes[1] #sets the axes for the plots
+
+			#OLS plot, it's a scatter of observed vs predicted with a 1:1 line, we also add the RMSE and R2 values on it 	
+			ax0.scatter(y_test, ypred_ols, s=20, alpha=0.7, color="C0") #x vs y, further paramaters are point settings
+			ax0.plot([mn, mx], [mn, mx], color="k", linestyle="--") #this is our 1:1 line to show a perfect 1:1 prediction to observed
+			ax0.set_title(f"OLS: Observed vs Predicted — {display_name}") #title
+			ax0.set_xlabel("Observed 2m Surface Temperature, C") #x axis
+			ax0.set_ylabel("Predicted 2m Surface Temperature, C") #y axis
+			ax0.text(0.02, 0.98, f"R2: {r2_ols:.3f}\nRMSE: {rmse_ols:.3f}" if not np.isnan(r2_ols) else f"RMSE: {rmse_ols:.3f}", #our added annotations
+				transform=ax0.transAxes, fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
+			
+			#Then the same thing as above but with the Ridge model
+			ax1.scatter(y_test, ypred_ridge, s=20, alpha=0.7, color="C1")
+			ax1.plot([mn, mx], [mn, mx], color="k", linestyle="--")
+			ax1.set_title(f"Ridge: Observed vs Predicted — {display_name}")
+			ax1.set_xlabel("Observed 2m Surface Temperature, C")
+			ax1.set_ylabel("Predicted 2m Surface Temperature, C")
+			ax1.text(0.02, 0.98, f"R2: {r2_ridge:.3f}\nRMSE: {rmse_ridge:.3f}" if not np.isnan(r2_ridge) else f"RMSE: {rmse_ridge:.3f}",
+				transform=ax1.transAxes, fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
+
+			fig.tight_layout() #Sets both of their layouts and saves them to our plot output area
+			panel_path = plotoutput / f"{name}_validate_panel_OLS_Ridge.png"
+			fig.savefig(panel_path)
+			plt.close(fig)
+
+	# writes the summary
 	outputdf = pd.DataFrame(results) #final dataframe from results list
 	outputdf.to_csv(outputdir / "regression_summary.csv", index=False) #writes the dataframe to a csv file
 	print("Wrote regression summary to", outputdir / "regression_summary.csv") #prints out where the csv was written
 	print("Wrote plots to", outputdir / "plots") #print out where the plots were written
+
+#Further plot to put both ridge and ols atop each other to look for differences (they are basically unnoticable)
+def plot_compare(per_station, outputdir, station_name=None): 
+	plotoutput = outputdir / "plots" #we already have the plot output dir from earlier so this can go here too 
+	datesplit = pd.Timestamp("2000-01-01") #again sets a date split
+
+	for name, df in per_station.items(): #for loop so we run the same process with all 3 stations
+		df = df.dropna(subset=["target", "MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]).copy() #drop rows with nans in our used columns
+		pre = df[df.index < datesplit] #splits the dataframe into our given time setups
+		post = df[df.index >= datesplit]
+
+		train_df, test_df = pre, post #sets the train and test frames to the respective timeframes too
+		X_train = train_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #x value training set
+		y_train = train_df["target"].values #the y value is the "target"
+		X_test = test_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #then the test sets
+		y_test = test_df["target"].values #these test value are what we compare our predictions to
+
+		# OLS
+		ols = LinearRegression() #we can just redo our linear regression here for ols
+		ols.fit(X_train, y_train) #and fit it with the training data
+		ypred_ols = ols.predict(X_test) #then just predict on the test data
+		#Then we can do ridge here
+		ridge_pipe = make_pipeline(StandardScaler(), Ridge()) #We use the pipeline to scale the data first then do ridge regression
+		ridge_pipe.fit(X_train, y_train) #fit the ridge model with training data
+		if hasattr(ridge_pipe, "named_steps") and "ridge" in ridge_pipe.named_steps: #check for named steps and ridge step
+			ridge_est = ridge_pipe.named_steps["ridge"] #set ridge estimator to ridge step
+		else: #or 
+			ridge_est = ridge_pipe #set ridge estimator to the pipeline itself
+		ypred_ridge = ridge_pipe.predict(X_test) #so we can predict on the test data with the ridge model
+
+		##################SCATTER SECTION######################
+		#Safeguard for r2 values
+		try: #These try's essentially calculate the r2 values and blanks them if something goes wrong
+			r2_ols = float(r2_score(y_test, ypred_ols)) if len(y_test) > 0 else float("nan")
+		except Exception:
+			r2_ols = float("nan")
+		try:
+			r2_ridge = float(r2_score(y_test, ypred_ridge)) if len(y_test) > 0 else float("nan")
+		except Exception:
+			r2_ridge = float("nan")
+
+		# Panel creation, when we use the station argument
+		if station_name and name == station_name: #if the station name argument is used and matches the current station name
+			display_name = STATION_ACTUALS.get(name, name.replace('WS', '').replace('_', ' ')) #uses the mapping of actual names here too
+			mn = min(y_test.min(), ypred_ols.min(), ypred_ridge.min()) #min and max values for axis limits
+			mx = max(y_test.max(), ypred_ols.max(), ypred_ridge.max())
+			fig, axes = plt.subplots(1, 2, figsize=(12, 8)) #sets up a subplot in a 1x2 format (and gives our figure size)
+			ax0 = axes[0] #sets axes for plots within the subplot
+			ax1 = axes[1]
+			#Basic scatter plot setup, this one for OLS same as previous ones in printing R2 values and all just properly printing them
+			ax0.scatter(y_test, ypred_ols, s=20, alpha=0.7, color="C0")
+			ax0.plot([mn, mx], [mn, mx], color="k", linestyle="--")
+			ax0.set_xlabel("Observed 2m Surface Temperature, C")
+			ax0.set_ylabel("Predicted 2m Surface Temperature, C")
+			ax0.set_title(f"OLS: Observed vs Predicted — {display_name}")
+			ax0.text(0.02, 0.98, f"R2_test: {r2_ols:.3f}" if not np.isnan(r2_ols) else "R2_test: nan",
+				transform=ax0.transAxes, fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
+			#Repeat with Ridge model
+			ax1.scatter(y_test, ypred_ridge, s=20, alpha=0.7, color="C1")
+			ax1.plot([mn, mx], [mn, mx], color="k", linestyle="--")
+			ax1.set_xlabel("Observed 2m Surface Temperature, C")
+			ax1.set_ylabel("Predicted 2m Surface Temperature, C")
+			ax1.set_title(f"Ridge: Observed vs Predicted — {display_name}")
+			ax1.text(0.02, 0.98, f"R2_test: {r2_ridge:.3f}" if not np.isnan(r2_ridge) else "R2_test: nan",
+				transform=ax1.transAxes, fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
+			#final layout and a quick save
+			fig.suptitle(f"{display_name} — OLS vs Ridge (Test)")
+			fig.tight_layout(rect=[0, 0.03, 1, 0.97])
+			panel_path = plotoutput / f"{name}_panel_OLS_Ridge.png"
+			fig.savefig(panel_path)
+			plt.close(fig)
+			continue
+
+		#This scatter setup when there's no station arg
+		fig, ax = plt.subplots(figsize=(6, 6)) #I used subplot here but it really doesnt need it it's just a basic single plot
+		ax.scatter(y_test, ypred_ols, s=20, alpha=0.7, label="OLS predicted", color="C0") #scatter for ols
+		ax.scatter(y_test, ypred_ridge, s=20, alpha=0.7, label="Ridge predicted", color="C1") #scatter for ridge
+		mn = min(y_test.min(), ypred_ols.min(), ypred_ridge.min()) #min and max values for axis limits
+		mx = max(y_test.max(), ypred_ols.max(), ypred_ridge.max())
+		ax.plot([mn, mx], [mn, mx], color="k", linestyle="--", label="1:1") #our perfect line
+		ax.set_xlabel("Observed 2m Surface Temperature, C")
+		ax.set_ylabel("Predicted 2m Surface Temperature, C")
+		display_name = STATION_ACTUALS.get(name, name.replace('WS', '').replace('_', ' '))
+		ax.set_title(f"{display_name} compare OLS vs Ridge: Observed vs Predicted")
+		ax.text(0.02, 0.98, f"OLS R2: {r2_ols:.3f}\nRidge R2: {r2_ridge:.3f}", transform=ax.transAxes, #R2 values
+			fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
+		ax.legend()
+		fig.tight_layout()
+		scatter_path = plotoutput / f"{name}_compare_OLS_vs_Ridge_obs_vs_pred.png"
+		fig.savefig(scatter_path)
+		plt.close(fig)
+
+		#Timeseries plots, idk if we need these still they are cool but kind of unnecessary but also kind of help with visualisation
+		fig, ax = plt.subplots(figsize=(10, 4)) #same paramter setup as other plots
+		ax.plot(test_df.index, y_test, label="observed", color="k")
+		ax.plot(test_df.index, ypred_ols, label="OLS predicted", color="C0", linestyle="-")
+		ax.plot(test_df.index, ypred_ridge, label="Ridge predicted", color="C1", linestyle="--")
+		ax.set_ylabel("2m Surface Temperature, C")
+		ax.set_title(f"{name} compare OLS vs Ridge Test Time Series")
+		ax.text(0.02, 0.98, f"OLS R2: {r2_ols:.3f}\nRidge R2: {r2_ridge:.3f}", transform=ax.transAxes,
+			fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
+		ax.legend()
+		fig.tight_layout()
+		ts_path = plotoutput / f"{name}_compare_OLS_vs_Ridge_timeseries.png"
+		fig.savefig(ts_path)
+		plt.close(fig)
+
+	print("Wrote comparison plots to", plotoutput) #confirmation
 
 ###
 #Function area for our argument parsing
@@ -208,6 +393,8 @@ def main():
 	parser.add_argument("--validate", action="store_true", help="Train on pre2000 and validate on post2000") #validate argument to train on pre2000 and validate on post2000
 	parser.add_argument("--models", choices=("both", "OLS", "Ridge"), default="both", #OLS is ordinary least squares, its the "normal" for linear regression with multiple variables
 						help="model run, OLS is ordinary least squares")
+	parser.add_argument("--compare", action="store_true", help="Will put the stations atop each other") #This was to put the two types atop of each other
+	parser.add_argument("--station", "-s", default=None, help="Just to focus on 1 station at once in compare") #station arg was breaking think I fixed
 	args = parser.parse_args() #parses the arguments
 
 	base = Path(args.dir).resolve() if args.dir else Path(__file__).resolve().parent #sets the base directory to either the arg provided or the current script directory
@@ -219,6 +406,10 @@ def main():
 	data = load_data(base) #loads the data from the base directory
 	pstation = reg_tables(data["mei"], data["aaoi"], data["stations"]) #prepares the regression tables
 	outputdirec = base / "regression_out" #output directory for regression results
+
+	if args.compare:
+		plot_compare(pstation, outputdirec, station_name=args.station) #if compares gone with run just this
+		return
 
 	if args.validate: #if validate argument is used
 		reporting.mode = "validate" #set reporting mode to validate (train pre2000, test post2000)
