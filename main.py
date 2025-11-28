@@ -1,10 +1,10 @@
+####
+####
+####Arguments at the bottom!!!!!!!!!!!!!
+####
+####
 
-#
-#Arguments at the bottom, 
-#Parts are a bit bloated for clarity I feel it could be made much more efficient but this works fine having all our plots come out right now
-#
-
-#import modules you'll have to pip install missing ones
+#import modules you'll have to pip install missing ones or whatever package manager used
 from pathlib import Path #Path module for filepath handling
 import argparse #command line argument parsing
 import pandas as pd #data handling lib
@@ -15,13 +15,13 @@ import matplotlib.pyplot as plt #plotter lib
 from sklearn.pipeline import make_pipeline #so we can scale into regression
 from sklearn.preprocessing import StandardScaler #scaling for ridge regression
 
+###File setup spot
 #Set respective files to their apt names here, top 2 are the system indices, the bottom 3 are the 3 weather stations used
 AAOI_FNAME = "aaoi.csv"
 MEI_FNAME = "mei.csv"
 ANTO_FNAME = "AntoWS.csv"
 PUERTO_FNAME = "PuertoWS.csv"
 QUIN_FNAME = "QuinWS.csv"
-
 #For the graphs so the actual names of the places are used
 STATION_ACTUALS = {
 	"AntoWS": "Antofagasta",
@@ -30,9 +30,9 @@ STATION_ACTUALS = {
 }
 
 
-###
-#Data processing area to read and load our data into appropriate frames or series
-###
+##################################################################################
+#Data processing area to read and load our data into appropriate frames or series#
+##################################################################################
 def load_data(base):
 	meipath = base / MEI_FNAME #For the mei file path
 	meivalues = [] #make an empty list to store all the mei values
@@ -62,9 +62,9 @@ def load_data(base):
 
 	return {"mei": mei, "aaoi": aaoi, "stations": stations} #return the final dict of data for our use
 
-###
-#Regression table setup area to prep data for regression
-###
+#########################################################
+#Regression table setup area to prep data for regression#
+#########################################################
 def reg_tables(mei, aaoi, stations):
 	base_df = pd.concat([mei, aaoi], axis=1) #make a base dataframe with our 2 indices 
 
@@ -89,18 +89,16 @@ def reg_tables(mei, aaoi, stations):
 		per_station[name] = df #store this in our new station dict
 	return per_station #return the final dict of per station dataframes
 
-###
-#Reporting area for regression results and plots
-###
+#################################################
+#Reporting area for regression results and plots#
+#################################################
 def reporting(per_station, outputdir, use_ridge=False):
 	results = [] #empty list for results
 	datesplit = pd.Timestamp("2000-01-01") #date to split pre and post 2000
 	outputdir.mkdir(parents=True, exist_ok=True) #make output directory if it doesnt exist
 	plotoutput = outputdir / "plots" #sets plot output dir
 	plotoutput.mkdir(parents=True, exist_ok=True) #make plot output dir if it doesnt exist
-
-	# get reporting mode and models from arguments set on run
-	# (we preserve the attribute approach but this function now performs validation-only)
+	#determined on run what we'd be doin
 	models_to_run = getattr(reporting, "models", ("OLS", "Ridge")) #model types to run
 	model_map = {"OLS": LinearRegression, "Ridge": Ridge} #map models to classes
 
@@ -109,17 +107,16 @@ def reporting(per_station, outputdir, use_ridge=False):
 		pre = df[df.index < datesplit] #split into pre and post 2000 dataframes
 		post = df[df.index >= datesplit] #post 2000 dataframe
 
-		# validation: train on pre2000, test on post2000
+		#validation area
 		train_df, test_df = pre, post #train on pre2000, test on post2000
 		train_name, test_name = "pre2000", "post2000" #sets names
-
+		#sets x and y to trains and tests
 		X_train = train_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #x value training set
 		y_train = train_df["target"].values #target y training values
 		X_test = test_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #x value test set
 		y_test = test_df["target"].values #target y test values
 
-		# collect model predictions so we can optionally produce a 2x2 panel combining OLS and Ridge
-		model_preds = {}
+		model_preds = {} #holds the model predictions for later use, in a dict
 
 		for model_name in models_to_run: #for each model to run
 			ModelCls = model_map.get(model_name) #set model class
@@ -143,7 +140,9 @@ def reporting(per_station, outputdir, use_ridge=False):
 			coefs = list(final_est.coef_) if hasattr(final_est, "coef_") else [float("nan")] * 4 #get all our coefficients
 			intercept = float(final_est.intercept_) if hasattr(final_est, "intercept_") else float("nan") #get the intercept
 
-			#Statistical test/diagnostics stuff to see how the models did
+			####################################################################################
+			#Statistical overview so RMSE/MAE/Skill scores, assessment of our model performance#
+			####################################################################################
 			rmse = float("nan") #root mean squared error, this is a regression error metric to see how well the model did
 			mae = float("nan") #mean absolute error, another regression error metric
 			base_rmse = float("nan") #given a baseline rmse value to create skill score 
@@ -160,7 +159,7 @@ def reporting(per_station, outputdir, use_ridge=False):
 			if model_name in model_preds: #to store the rmse to be used on our graphs
 				model_preds[model_name]["rmse_test"] = rmse #puts the rmse output in a dict for use later
 
-			results.append({ #append our results
+			results.append({ #append our results ready to be output later
 				"station": name, #respective station name
 				"period": f"train_{train_name}_test_{test_name}", #period info (pre or post 2000, train or test data)
 				"model": model_name, #used model name
@@ -179,7 +178,7 @@ def reporting(per_station, outputdir, use_ridge=False):
 				"skill_score": skillsc, #1 - RMSE_model / RMSE_climatology
 			})
 
-			# write per-station report
+			#per-station report, extremely bloated file name we will look past, same as above just for one station
 			rpt = outputdir / f"report_{name}_train_{train_name}_test_{test_name}_{model_name}.txt" #set a file path for the end report
 			with rpt.open("w", encoding="utf-8") as f: #open the report file
 				f.write(f"Station: {name}\nMode: validate (train pre2000 -> test post2000)\nModel: {model_name}\nRows (train/test): {train_df.shape[0]} / {test_df.shape[0]}\n\n") #write's all the aformentioned info into the csv to be read as a report file
@@ -193,7 +192,10 @@ def reporting(per_station, outputdir, use_ridge=False):
 				f.write(f"baseline_rmse (climatology): {base_rmse}\n")
 				f.write(f"skill_score (1 - RMSE_model/RMSE_climatology): {skillsc}\n")
 
-			# plots
+			#######
+			#Plots#
+			#######
+			#scatter plot observed vs predicted
 			fig, ax = plt.subplots(figsize=(6, 6)) #sets figure and axis and size (6x6)
 			if len(y_test) > 0: #if there are test y values
 				ax.scatter(y_test, ypred_test, s=20, alpha=0.7) #scatter plot of observed vs predicted
@@ -203,7 +205,7 @@ def reporting(per_station, outputdir, use_ridge=False):
 			ax.set_xlabel("Observed 2m Surface Temperature, C") #x axis label
 			ax.set_ylabel("Predicted 2m Surface Temperature, C") #y axis label
 			ax.set_title(f"{name} validate {model_name} Test Observed vs Predicted") #title
-			# annotate R2 values on the scatter plot
+			#below annotations for results to show on plot
 			r2_train_txt = f"R2_train: {r2_train:.3f}" if not np.isnan(r2_train) else "R2_train: nan"
 			r2_test_txt = f"R2_test: {r2_test:.3f}" if not np.isnan(r2_test) else "R2_test: nan"
 			ax.text(0.02, 0.98, r2_train_txt + "\n" + r2_test_txt, transform=ax.transAxes,
@@ -221,7 +223,7 @@ def reporting(per_station, outputdir, use_ridge=False):
 				ax.plot(test_df.index, ypred_test, label="predicted") #predicted values
 			ax.set_ylabel("2m Surface Temperature, C") #y axis label
 			ax.set_title(f"{name} validate {model_name} Test Time Series") #title
-			# annotate R2 for timeseries plots (test R2 is most relevant for plotted test series)
+			#again anotations 
 			ax.text(0.02, 0.98, r2_test_txt, transform=ax.transAxes, fontsize=9, va="top",
 				bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
 			ax.legend()
@@ -272,10 +274,13 @@ def reporting(per_station, outputdir, use_ridge=False):
 	# writes the summary
 	outputdf = pd.DataFrame(results) #final dataframe from results list
 	outputdf.to_csv(outputdir / "regression_summary.csv", index=False) #writes the dataframe to a csv file
-	print("Wrote regression summary to", outputdir / "regression_summary.csv") #prints out where the csv was written
+	print("Wrote regression summary to", outputdir / "regression_summary.csv") #prints out where the csv was written (sudo debug lol)
 	print("Wrote plots to", outputdir / "plots") #print out where the plots were written
 
 #Further plot to put both ridge and ols atop each other to look for differences (they are basically unnoticable)
+######################
+#Comparisson plotting#
+######################
 def plot_compare(per_station, outputdir, station_name=None): 
 	plotoutput = outputdir / "plots" #we already have the plot output dir from earlier so this can go here too 
 	datesplit = pd.Timestamp("2000-01-01") #again sets a date split
@@ -291,7 +296,7 @@ def plot_compare(per_station, outputdir, station_name=None):
 		X_test = test_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #then the test sets
 		y_test = test_df["target"].values #these test value are what we compare our predictions to
 
-		# OLS
+		#OLS part
 		ols = LinearRegression() #we can just redo our linear regression here for ols
 		ols.fit(X_train, y_train) #and fit it with the training data
 		ypred_ols = ols.predict(X_test) #then just predict on the test data
@@ -306,7 +311,7 @@ def plot_compare(per_station, outputdir, station_name=None):
 
 		##################SCATTER SECTION######################
 		#Safeguard for r2 values
-		try: #These try's essentially calculate the r2 values and blanks them if something goes wrong
+		try: #These try's essentially calculate the r2 values and blanks them if something goes wrong, can remove later it's fine for now 
 			r2_ols = float(r2_score(y_test, ypred_ols)) if len(y_test) > 0 else float("nan")
 		except Exception:
 			r2_ols = float("nan")
@@ -315,7 +320,7 @@ def plot_compare(per_station, outputdir, station_name=None):
 		except Exception:
 			r2_ridge = float("nan")
 
-		# Panel creation, when we use the station argument
+		#Panel creation where station argument is used
 		if station_name and name == station_name: #if the station name argument is used and matches the current station name
 			display_name = STATION_ACTUALS.get(name, name.replace('WS', '').replace('_', ' ')) #uses the mapping of actual names here too
 			mn = min(y_test.min(), ypred_ols.min(), ypred_ridge.min()) #min and max values for axis limits
@@ -354,38 +359,39 @@ def plot_compare(per_station, outputdir, station_name=None):
 		mn = min(y_test.min(), ypred_ols.min(), ypred_ridge.min()) #min and max values for axis limits
 		mx = max(y_test.max(), ypred_ols.max(), ypred_ridge.max())
 		ax.plot([mn, mx], [mn, mx], color="k", linestyle="--", label="1:1") #our perfect line
-		ax.set_xlabel("Observed 2m Surface Temperature, C")
+		ax.set_xlabel("Observed 2m Surface Temperature, C") #axis labels
 		ax.set_ylabel("Predicted 2m Surface Temperature, C")
-		display_name = STATION_ACTUALS.get(name, name.replace('WS', '').replace('_', ' '))
-		ax.set_title(f"{display_name} compare OLS vs Ridge: Observed vs Predicted")
+		display_name = STATION_ACTUALS.get(name, name.replace('WS', '').replace('_', ' ')) #proper naming
+		ax.set_title(f"{display_name} compare OLS vs Ridge: Observed vs Predicted") #title
 		ax.text(0.02, 0.98, f"OLS R2: {r2_ols:.3f}\nRidge R2: {r2_ridge:.3f}", transform=ax.transAxes, #R2 values
-			fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
-		ax.legend()
-		fig.tight_layout()
-		scatter_path = plotoutput / f"{name}_compare_OLS_vs_Ridge_obs_vs_pred.png"
-		fig.savefig(scatter_path)
-		plt.close(fig)
+			fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7)) #annotation paramaters
+		ax.legend() #legend set 
+		fig.tight_layout() #layout from plt
+		scplotpth = plotoutput / f"{name}_compare_OLS_vs_Ridge_obs_vs_pred.png" #file name
+		fig.savefig(scplotpth) #saves to our path
+		plt.close(fig) #closes figure we are working on
 
 		#Timeseries plots, idk if we need these still they are cool but kind of unnecessary but also kind of help with visualisation
 		fig, ax = plt.subplots(figsize=(10, 4)) #same paramter setup as other plots
-		ax.plot(test_df.index, y_test, label="observed", color="k")
-		ax.plot(test_df.index, ypred_ols, label="OLS predicted", color="C0", linestyle="-")
-		ax.plot(test_df.index, ypred_ridge, label="Ridge predicted", color="C1", linestyle="--")
-		ax.set_ylabel("2m Surface Temperature, C")
-		ax.set_title(f"{name} compare OLS vs Ridge Test Time Series")
-		ax.text(0.02, 0.98, f"OLS R2: {r2_ols:.3f}\nRidge R2: {r2_ridge:.3f}", transform=ax.transAxes,
-			fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
-		ax.legend()
-		fig.tight_layout()
-		ts_path = plotoutput / f"{name}_compare_OLS_vs_Ridge_timeseries.png"
-		fig.savefig(ts_path)
-		plt.close(fig)
+		ax.plot(test_df.index, y_test, label="observed", color="k") #sets observed line
+		ax.plot(test_df.index, ypred_ols, label="OLS predicted", color="C0", linestyle="-") #ols predicted line
+		ax.plot(test_df.index, ypred_ridge, label="Ridge predicted", color="C1", linestyle="--") #ridge predicted line
+		ax.set_ylabel("2m Surface Temperature, C") #sets a y axis label
+		display_name = STATION_ACTUALS.get(name, name.replace('WS', '').replace('_', ' ')) #fixes name to actual name
+		ax.set_title(f"{display_name} compare OLS vs Ridge Test Time Series") #title
+		ax.text(0.02, 0.98, f"OLS R2: {r2_ols:.3f}\nRidge R2: {r2_ridge:.3f}", transform=ax.transAxes, #annotated r2 values
+			fontsize=9, va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.7)) #annotation paramaters
+		ax.legend() #legend set 
+		fig.tight_layout() #layout from plt
+		timeserpth = plotoutput / f"{name}_compare_OLS_vs_Ridge_timeseries.png" #output save
+		fig.savefig(timeserpth) #saves to our path
+		plt.close(fig) #closes figure
 
 	print("Wrote comparison plots to", plotoutput) #confirmation
 
-###
-#Function area for our argument parsing
-###
+########################################
+#Function area for our argument parsing#
+########################################
 def main():
 	parser = argparse.ArgumentParser() #sets up the argument parser
 	parser.add_argument("--run", action="store_true", help="actual regression run, could just default true") #run argument to actually run the regression
@@ -398,6 +404,10 @@ def main():
 	args = parser.parse_args() #parses the arguments
 
 	base = Path(args.dir).resolve() if args.dir else Path(__file__).resolve().parent #sets the base directory to either the arg provided or the current script directory
+
+	########################################################################################
+	#Below section handles the arguments given on run to call the functions we define above#
+	########################################################################################
 
 	if not args.run: #if nothings used drop this messge, we could just default to true
 		print("use the shown args (--run) to properly start") 
@@ -425,5 +435,5 @@ def main():
 
 
 if __name__ == "__main__":
-	main() #entry point for the script, calls main function, kinda weird python standard
+	main() #entry point for the script, calls main function, kinda weird python standard when argment parsing
 
