@@ -75,18 +75,33 @@ def reg_tables(mei, aaoi, stations):
 	combined_df = pd.concat(combined, axis=1) #pandas concat makes a big dataframe with everything together 
 	t2m_cols = [c for c in combined_df.columns if c.startswith("t2m_")] #select all the temperature columns 
 	wind_cols = [c for c in combined_df.columns if c.startswith("wind_")] #select all our wind columns too
-	combined_df["regional_t2m_mean"] = combined_df[t2m_cols].mean(axis=1) #new column that means all temperature columns
-	combined_df["regional_wind_mean"] = combined_df[wind_cols].mean(axis=1) #and a new column that means all wind columns
 
-	merged = base_df.join(combined_df[["regional_t2m_mean", "regional_wind_mean"]], how="inner") #merge the base dataframe with the regional means
+	combined_df["regional_t2m_mean"] = combined_df[t2m_cols].mean(axis=1) #full station regional means
+	combined_df["regional_wind_mean"] = combined_df[wind_cols].mean(axis=1) #full stational regional mean wind valyues
+
+	merge_cols = t2m_cols + wind_cols + ["regional_t2m_mean", "regional_wind_mean"] #merge columns so we can build per-station frames
+	merged = base_df.join(combined_df[merge_cols], how="inner") #join the base frame with the per-station one
 
 	per_station = {} #empty dict for per station dataframes again
 	for name in stations.keys(): #for each station in our station dict
-		tcol = f"t2m_{name}" #set the temp column name to the appropriate station
-		wcol = f"wind_{name}" #same for wind
-		df = merged[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].join(combined_df[[tcol, wcol]], how="left") #make a dataframe with the indices, regional means, and the station specific columns
-		df = df.rename(columns={tcol: "target", wcol: "weather_station"}) #rename the station specific columns to target and weather_station for regression use
-		per_station[name] = df #store this in our new station dict
+		tcol = f"t2m_{name}"
+		wcol = f"wind_{name}"
+		n_t2m = len(t2m_cols) #here we do leave one out calculations, making sure the investigated station does not have its own data in the regional means
+		if n_t2m > 1: #this way there is no leaking of predictor data
+			other_t2m_sum = combined_df[t2m_cols].sum(axis=1) - combined_df[tcol] #sum of all t2m columns minus the current station
+			reg_t2m_excl = other_t2m_sum / (n_t2m - 1) #divide by n-1 to get the leave one out mean
+			other_wind_sum = combined_df[wind_cols].sum(axis=1) - combined_df[wcol] #same for wind columns
+			reg_wind_excl = other_wind_sum / (n_t2m - 1)
+		else:
+			reg_t2m_excl = combined_df[t2m_cols].mean(axis=1) #incase everything breaks
+			reg_wind_excl = combined_df[wind_cols].mean(axis=1)
+
+		df = merged[["MEI", "AAOI"]].copy() #new dataframe with base columns
+		df["regional_t2m_mean"] = reg_t2m_excl #add the means with respective station left out
+		df["regional_wind_mean"] = reg_wind_excl #again with wind
+		df = df.join(combined_df[[tcol, wcol]], how="left") #rejoin into new dataframe
+		df = df.rename(columns={tcol: "target", wcol: "weather_station"}) #rename columns
+		per_station[name] = df #store in per station dict
 	return per_station #return the final dict of per station dataframes
 
 #################################################
@@ -182,9 +197,9 @@ def reporting(per_station, outputdir, use_ridge=False):
 			rpt = outputdir / f"report_{name}_train_{train_name}_test_{test_name}_{model_name}.txt" #set a file path for the end report
 			with rpt.open("w", encoding="utf-8") as f: #open the report file
 				f.write(f"Station: {name}\nMode: validate (train pre2000 -> test post2000)\nModel: {model_name}\nRows (train/test): {train_df.shape[0]} / {test_df.shape[0]}\n\n") #write's all the aformentioned info into the csv to be read as a report file
-				f.write(f"Intercept: {intercept}\n")
-				f.write(f"coef_MEI: {coefs[0] if len(coefs) > 0 else 'nan'}\n")
-				f.write(f"coef_AAOI: {coefs[1] if len(coefs) > 1 else 'nan'}\n")
+				f.write(f"Intercept: {intercept}\n") 
+				f.write(f"coef_MEI: {coefs[0] if len(coefs) > 0 else 'nan'}\n") #this is identical to above just writing to a txt file instead of in a dict so needs \n for new lines
+				f.write(f"coef_AAOI: {coefs[1] if len(coefs) > 1 else 'nan'}\n")#everything else about this is identical to the above one; whats written and used etc...
 				f.write(f"coef_reg_t2m: {coefs[2] if len(coefs) > 2 else 'nan'}\n")
 				f.write(f"coef_reg_wind: {coefs[3] if len(coefs) > 3 else 'nan'}\n")
 				f.write(f"R2_train: {r2_train}\nR2_test: {r2_test}\n")
@@ -398,16 +413,16 @@ def main():
 	parser.add_argument("--dir", "-d", default=None, help="will just default to wkdir") #directory argument to set the working directory, defaults to current script dir
 	parser.add_argument("--validate", action="store_true", help="Train on pre2000 and validate on post2000") #validate argument to train on pre2000 and validate on post2000
 	parser.add_argument("--models", choices=("both", "OLS", "Ridge"), default="both", #OLS is ordinary least squares, its the "normal" for linear regression with multiple variables
-						help="model run, OLS is ordinary least squares")
+						help="pick between OLS Ridge or 'both'")
 	parser.add_argument("--compare", action="store_true", help="Will put the stations atop each other") #This was to put the two types atop of each other
 	parser.add_argument("--station", "-s", default=None, help="Just to focus on 1 station at once in compare") #station arg was breaking think I fixed
-	args = parser.parse_args() #parses the arguments
-
-	base = Path(args.dir).resolve() if args.dir else Path(__file__).resolve().parent #sets the base directory to either the arg provided or the current script directory
+	args = parser.parse_args() #parses the arguments!!!!!!!!
 
 	########################################################################################
 	#Below section handles the arguments given on run to call the functions we define above#
 	########################################################################################
+
+	base = Path(args.dir).resolve() if args.dir else Path(__file__).resolve().parent #sets the base directory to either the arg provided or the current script directory
 
 	if not args.run: #if nothings used drop this messge, we could just default to true
 		print("use the shown args (--run) to properly start") 
