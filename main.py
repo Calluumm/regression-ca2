@@ -116,6 +116,7 @@ def reporting(per_station, outputdir, use_ridge=False):
 	#determined on run what we'd be doin
 	models_to_run = getattr(reporting, "models", ("OLS", "Ridge")) #model types to run
 	model_map = {"OLS": LinearRegression, "Ridge": Ridge} #map models to classes
+	vif_rows = [] #list for VIF rows
 
 	for name, df in per_station.items(): #for each station in our per station dict
 		df = df.dropna(subset=["target", "MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]).copy() #drop rows with nans in important columns
@@ -130,7 +131,27 @@ def reporting(per_station, outputdir, use_ridge=False):
 		y_train = train_df["target"].values #target y training values
 		X_test = test_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].values #x value test set
 		y_test = test_df["target"].values #target y test values
-
+		#Trys VIF
+		try:
+			X_train_df = train_df[["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]].dropna() #drops na and sets a new df
+		except Exception: #incase something goes wrong (it did)
+			X_train_df = pd.DataFrame(columns=["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]) #just set it to a plane dataframe
+		if X_train_df.shape[0] > X_train_df.shape[1]: #if we have more rows than columns we can do vif
+			for col in X_train_df.columns: #for each column in our dataframe we do a vif calc
+				others = X_train_df.drop(columns=[col]) 
+				if others.shape[1] == 0: #when there are no other predictors
+					vif = float('nan')  #set vif to nan
+				else: #otherwise we do the vif calculation
+					lr_v = LinearRegression() #set up linear regression
+					lr_v.fit(others.values, X_train_df[col].values) #fit the predictors to current column
+					yhat = lr_v.predict(others.values)  #predict the current column from the others
+					r2_col = float(r2_score(X_train_df[col].values, yhat)) if len(X_train_df[col].values) > 0 else float('nan') #generate r2 score for the prediction
+					vif = 1.0 / (1.0 - r2_col) if (1.0 - r2_col) > 0 else float('inf') #assess for inflation (vif in our case)
+				vif_rows.append({"station": name, "predictor": col, "vif": vif}) #report vif result
+		else: #if we cant do vif just set stuff to nan
+			for col in ["MEI", "AAOI", "regional_t2m_mean", "regional_wind_mean"]:
+				vif_rows.append({"station": name, "predictor": col, "vif": float('nan')})
+		
 		model_preds = {} #holds the model predictions for later use, in a dict
 
 		for model_name in models_to_run: #for each model to run
@@ -291,6 +312,9 @@ def reporting(per_station, outputdir, use_ridge=False):
 	outputdf.to_csv(outputdir / "regression_summary.csv", index=False) #writes the dataframe to a csv file
 	print("Wrote regression summary to", outputdir / "regression_summary.csv") #prints out where the csv was written (sudo debug lol)
 	print("Wrote plots to", outputdir / "plots") #print out where the plots were written
+	vifdf = pd.DataFrame(vif_rows) #puts the vif rows in a dataframe (we added much later)
+	vifdf.to_csv(outputdir / "vif_summary.csv", index=False) #pushes the daraftrame to a csv
+	print("Wrote VIF summary to", outputdir / "vif_summary.csv") #writes the save debug
 
 #Further plot to put both ridge and ols atop each other to look for differences (they are basically unnoticable)
 ######################
@@ -445,5 +469,6 @@ def main():
 
 if __name__ == "__main__":
 	main() #entry point for the script, calls main function, kinda weird python standard when argment parsing
+
 
 
