@@ -411,7 +411,6 @@ def main():
 	parser = argparse.ArgumentParser() #sets up the argument parser
 	parser.add_argument("--run", action="store_true", help="actual regression run, could just default true") #run argument to actually run the regression
 	parser.add_argument("--dir", "-d", default=None, help="will just default to wkdir") #directory argument to set the working directory, defaults to current script dir
-	parser.add_argument("--validate", action="store_true", help="Train on pre2000 and validate on post2000") #validate argument to train on pre2000 and validate on post2000
 	parser.add_argument("--models", choices=("both", "OLS", "Ridge"), default="both", #OLS is ordinary least squares, its the "normal" for linear regression with multiple variables
 						help="pick between OLS Ridge or 'both'")
 	parser.add_argument("--compare", action="store_true", help="Will put the stations atop each other") #This was to put the two types atop of each other
@@ -436,11 +435,6 @@ def main():
 		plot_compare(pstation, outputdirec, station_name=args.station) #if compares gone with run just this
 		return
 
-	if args.validate: #if validate argument is used
-		reporting.mode = "validate" #set reporting mode to validate (train pre2000, test post2000)
-	else:
-		reporting.mode = "within" #set reporting mode to just the whole period
-
 	if args.models == "both": #if both models argument is used
 		reporting.models = ("OLS", "Ridge") #set reporting models to both
 	else: #otherwise
@@ -451,4 +445,5 @@ def main():
 
 if __name__ == "__main__":
 	main() #entry point for the script, calls main function, kinda weird python standard when argment parsing
+
 
